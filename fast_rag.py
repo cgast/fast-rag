@@ -1,6 +1,5 @@
 import asyncio
 import aiohttp
-import json
 import os
 import time
 
@@ -23,7 +22,7 @@ class FastRAG:
         self.jina_key = jina_key
         self.cohere_key = cohere_key
         self.max_age = max_age  # Default 1 hour cache
-    
+
     async def search(self, query, num_results=5):
         async with aiohttp.ClientSession() as session:
             async with session.post(
@@ -32,9 +31,9 @@ class FastRAG:
                 json={'q': query, 'num': num_results}
             ) as response:
                 data = await response.json()
-                return [{'title': item.get('title', ''), 'url': item.get('link', ''), 'snippet': item.get('snippet', '')} 
+                return [{'title': item.get('title', ''), 'url': item.get('link', ''), 'snippet': item.get('snippet', '')}
                        for item in data.get('organic', [])]
-    
+
     async def scrape(self, urls):
         results = []
         async with aiohttp.ClientSession() as session:
@@ -53,12 +52,12 @@ class FastRAG:
                 except Exception as e:
                     print(f"Error scraping {url}: {e}")
         return results
-    
+
     def chunk(self, content, size=1000):
         text = content.strip()
         if len(text) <= size:
             return [text]
-        
+
         chunks = []
         start = 0
         while start < len(text):
@@ -70,20 +69,20 @@ class FastRAG:
                     if last_punct > start + size//2:
                         end = last_punct + 1
                         break
-            
+
             chunk = text[start:end].strip()
             if chunk:
                 chunks.append(chunk)
             start = end - 50  # Small overlap
-        
+
         return chunks
-    
+
     async def rerank(self, query, chunks, top_k=5):
         if not chunks:
             return []
-        
+
         rerank_start = time.time()
-        
+
         # Try Cohere first (it's working better)
         if self.cohere_key:
             cohere_start = time.time()
@@ -94,8 +93,8 @@ class FastRAG:
                         headers={'Authorization': f'Bearer {self.cohere_key}', 'Content-Type': 'application/json'},
                         json={
                             'model': 'rerank-english-v3.0',
-                            'query': query, 
-                            'documents': chunks, 
+                            'query': query,
+                            'documents': chunks,
                             'top_k': min(top_k, len(chunks))
                         }
                     ) as response:
@@ -115,7 +114,7 @@ class FastRAG:
                             print(f"Cohere API error: {response.status}, trying Jina...")
             except Exception as e:
                 print(f"Cohere error: {e}, trying Jina...")
-        
+
         # Fallback to Jina
         if self.jina_key:
             jina_start = time.time()
@@ -142,30 +141,30 @@ class FastRAG:
                             print(f"Jina API error: {response.status}")
             except Exception as e:
                 print(f"Jina error: {e}")
-        
+
         # Final fallback - no reranking
         fallback_time = time.time() - rerank_start
         print(f"Using simple ranking fallback ({fallback_time:.1f}s)")
         return [{'content': chunk, 'score': 0} for chunk in chunks[:top_k]]
-    
+
     async def process(self, query):
         start_time = time.time()
-        
+
         # Search
         search_start = time.time()
-        print(f"🔍 Searching...")
+        print("🔍 Searching...")
         sources = await self.search(query)
         urls = [s['url'] for s in sources]
         search_time = time.time() - search_start
         print(f"Found {len(sources)} sources ({search_time:.1f}s)")
-        
+
         # Scrape
         scrape_start = time.time()
         print(f"📄 Scraping {len(urls)} URLs...")
         scraped = await self.scrape(urls)
         scrape_time = time.time() - scrape_start
         print(f"Successfully scraped {len(scraped)} pages ({scrape_time:.1f}s)")
-        
+
         # Chunk
         chunk_start = time.time()
         all_chunks = []
@@ -174,21 +173,21 @@ class FastRAG:
             all_chunks.extend(chunks[:3])  # Max 3 chunks per source
         chunk_time = time.time() - chunk_start
         print(f"Created {len(all_chunks)} chunks ({chunk_time:.1f}s)")
-        
-        # Rerank  
+
+        # Rerank
         ranked = await self.rerank(query, all_chunks)
         print(f"Reranked to {len(ranked)} top chunks")
-        
+
         # Format context
         format_start = time.time()
         context = f"Query: {query}\n\n"
         for i, chunk in enumerate(ranked, 1):
             context += f"Source {i} (Score: {chunk.get('score', 0):.3f}):\n{chunk['content'][:500]}...\n\n"
         format_time = time.time() - format_start
-        
+
         total_time = time.time() - start_time
         print(f"Context formatted ({format_time:.1f}s) | Total: {total_time:.1f}s")
-        
+
         return {
             'query': query,
             'sources': len(sources),
@@ -197,7 +196,7 @@ class FastRAG:
             'time': total_time,
             'timing': {
                 'search': search_time,
-                'scrape': scrape_time, 
+                'scrape': scrape_time,
                 'chunk': chunk_time,
                 'format': format_time,
                 'total': total_time
@@ -211,17 +210,17 @@ async def main():
     firecrawl_key = os.getenv('FIRECRAWL_API_KEY')
     jina_key = os.getenv('JINA_API_KEY')
     cohere_key = os.getenv('COHERE_API_KEY')
-    
+
     if not serper_key or not firecrawl_key:
         print("Set SERPER_API_KEY and FIRECRAWL_API_KEY environment variables")
         return
-    
+
     rag = FastRAG(serper_key, firecrawl_key, jina_key, cohere_key, max_age=1800000)  # 30 min for demo
-    
+
     query = "What is artificial intelligence?"
     print(f"Query: {query}")
     result = await rag.process(query)
-    
+
     print(f"\nTime: {result['time']:.1f}s | Sources: {result['sources']} | Chunks: {result['chunks']}")
     print("\nCONTEXT:")
     print("=" * 50)
